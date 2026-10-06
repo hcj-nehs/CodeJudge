@@ -373,7 +373,8 @@ function viewMe() {
 // ============ 題目列表 ============
 async function viewProblems() {
   const { problems } = await api('GET', '/api/problems');
-  const chapters = [...new Set(problems.map(p => p.chapter || '其他'))];
+  const order = c => c === '初階' ? 0 : c === '進階' ? 1 : 2;
+  const chapters = [...new Set(problems.map(p => p.chapter || '其他'))].sort((a, b) => order(a) - order(b));
   const solved = problems.filter(p => p.mine && p.mine.ac).length;
   app().innerHTML = `
     <div class="card">
@@ -790,7 +791,7 @@ async function viewAdmin() {
     if (tab === 'problems') {
       const { problems } = await api('GET', '/api/problems');
       el.innerHTML = `<div class="row" style="margin-bottom:10px"><a class="btn primary" href="#/edit/">＋ 新增題目</a><span class="muted small">題目存在 Google Sheet 的「題目」工作表。</span></div>
-        <table class="list"><thead><tr><th>題號</th><th>題目</th><th>章節</th><th>滿分</th><th>公開</th><th>通過/嘗試</th><th></th></tr></thead><tbody>
+        <table class="list"><thead><tr><th>題號</th><th>題目</th><th>分類</th><th>滿分</th><th>公開</th><th>通過/嘗試</th><th></th></tr></thead><tbody>
         ${problems.map(p => `<tr><td>${esc(p.id)}</td><td><a href="#/problem/${esc(p.id)}">${esc(p.title)}</a></td><td class="small">${esc(p.chapter)}</td><td>${p.points}</td>
           <td>${p.visible ? '✔' : '<span class="muted">隱藏</span>'}</td><td>${p.stats.ac}/${p.stats.tried}</td>
           <td><a class="btn sm" href="#/edit/${esc(p.id)}">編輯</a> <button class="btn sm danger" data-del="${esc(p.id)}">刪除</button></td></tr>`).join('')}</tbody></table>`;
@@ -814,12 +815,14 @@ async function viewAdmin() {
 }
 
 async function viewEditProblem(id) {
-  let p = { id: '', title: '', chapter: 'CH2 基本的 Python 程式設計', tags: [], difficulty: 1, content: '', inputDesc: '', outputDesc: '', samples: [{ input: '', output: '' }], hint: '', timeLimitMs: 2000, tests: [{ input: '', output: '', score: 100, public: true }], solution: '', visible: true };
+  let p = { id: '', title: '', chapter: '初階', tags: [], difficulty: 1, content: '', inputDesc: '', outputDesc: '', samples: [{ input: '', output: '' }], hint: '', timeLimitMs: 2000, tests: [{ input: '', output: '', score: 100, public: true }], solution: '', visible: true };
   if (id) p = (await api('GET', '/api/problems/' + encodeURIComponent(id))).problem;
   const field = (k, label, type = 'text') => `<label>${label}</label>${type === 'area' ? `<textarea id="f_${k}" rows="4" style="font-family:inherit">${esc(p[k])}</textarea>` : `<input type="text" id="f_${k}" value="${esc(p[k])}">`}`;
   app().innerHTML = `<div class="card"><h2>${id ? '編輯題目 ' + esc(id) : '新增題目'}</h2>
     <div class="form-grid">
-      ${field('id', '題號')}${field('title', '題目名稱')}${field('chapter', '章節')}
+      ${field('id', '題號')}${field('title', '題目名稱')}
+      <label>分類</label><div><input type="text" id="f_chapter" value="${esc(p.chapter)}" list="chapterList" style="width:200px">
+        <datalist id="chapterList"><option value="初階"><option value="進階"></datalist> <span class="muted small">選「初階」或「進階」，也可以自己輸入新的分類</span></div>
       <label>分類標籤</label><input type="text" id="f_tags" value="${esc((p.tags || []).join(', '))}" placeholder="用逗號分隔，例如 input, 變數">
       <label>難度 / 時限</label><div class="row"><select id="f_difficulty">${[1, 2, 3].map(n => `<option value="${n}" ${n === p.difficulty ? 'selected' : ''}>${'★'.repeat(n)}</option>`).join('')}</select>
         時間限制 <input type="number" id="f_timeLimitMs" value="${p.timeLimitMs}" style="width:90px"> ms
