@@ -41,6 +41,7 @@ function fmtTime(ts, short) {
 }
 const VERDICT = { AC: '通過', WA: '答案錯誤', TLE: '執行超時', RE: '執行錯誤', CE: '編譯錯誤', OLE: '輸出過多' };
 const vBadge = v => `<span class="v ${esc(v)}" title="${esc(VERDICT[v] || v)}">${esc(v)}</span>`;
+const rankBadge = r => `<span class="rank r${Math.min(r, 4)}" title="本班第 ${r} 位完成">${r <= 3 ? ['🥇', '🥈', '🥉'][r - 1] : ''}第 ${r} 名</span>`;
 const stars = n => `<span class="stars">${'★'.repeat(n)}${'☆'.repeat(Math.max(0, 3 - n))}</span>`;
 const isTeacher = () => ME && ME.role === 'teacher';
 const userLabel = s => `${esc(s.cls || '')}${s.seat ? '-' + String(s.seat).padStart(2, '0') : ''} ${esc(s.name || s.account)}`;
@@ -393,7 +394,7 @@ async function viewProblems() {
           <td>${p.stats.submissions}</td>
           <td>${isTeacher() ? (p.visible ? '公開' : '<span class="muted">隱藏</span>')
             : !p.mine ? '<span class="muted">未作答</span>'
-              : p.mine.ac ? `<span class="mine-ac">✔ 通過</span> <span class="muted small">${fmtTime(p.mine.firstAC, true)}</span>`
+              : p.mine.ac ? `<span class="mine-ac">✔ 通過</span>${p.mine.rank ? ` ${rankBadge(p.mine.rank)}` : ''} <span class="muted small">${fmtTime(p.mine.firstAC, true)}</span>`
                 : `<span class="mine-tried">✘ ${p.mine.best} 分</span> <span class="muted small">(${p.mine.tries} 次)</span>`}</td>
         </tr>`).join('')}</tbody></table></div></div>`).join('')}`;
   $('#q').oninput = e => { const q = e.target.value.toLowerCase(); $$('tr[data-s]').forEach(tr => tr.style.display = tr.dataset.s.includes(q) ? '' : 'none'); };
@@ -415,6 +416,7 @@ async function viewProblem(id) {
       <div class="card">
         <div class="ptitle"><span class="pid">${esc(p.id)}</span><h2 style="margin:0">${esc(p.title)}</h2>${isTeacher() ? `<a class="btn sm" href="#/edit/${esc(p.id)}">編輯題目</a>` : ''}</div>
         <div class="muted small" style="margin:4px 0 10px">${esc(p.chapter)} · ${stars(p.difficulty)} · 時間限制 ${p.timeLimitMs / 1000} 秒 · 滿分 ${p.points} · ${(p.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('')}</div>
+        ${p.lesson ? `<details class="lesson" ${store.get('cj-lesson-closed') === '1' ? '' : 'open'}><summary>📘 程式碼介紹</summary><div class="lesson-body">${renderLesson(p.lesson)}</div></details>` : ''}
         <h3>內容</h3><div class="pbody">${esc(p.content)}</div>
         <h3>輸入說明</h3><div class="pbody">${esc(p.inputDesc)}</div>
         <h3>輸出說明</h3><div class="pbody">${esc(p.outputDesc)}</div>
@@ -424,7 +426,7 @@ async function viewProblem(id) {
         ${p.hint ? `<h3>提示</h3><div class="hintbox">${esc(p.hint)}</div>` : ''}
       </div>
       <div class="card">
-        <div class="tabs" id="ptabs"><button data-t="mine" class="on">${isTeacher() ? '我的測試' : '本題狀況（我的提交）'}</button>${isTeacher() ? '<button data-t="students">全班狀況</button>' : ''}</div>
+        <div class="tabs" id="ptabs"><button data-t="mine" class="on">${isTeacher() ? '我的測試' : '本題狀況（我的提交）'}</button><button data-t="rank">🏆 本班完成名次</button>${isTeacher() ? '<button data-t="students">全班狀況</button>' : ''}</div>
         <div id="ptab"></div>
       </div>
     </div>
@@ -474,6 +476,20 @@ async function viewProblem(id) {
   Judge.start().catch(() => { });
 
   $$('[data-copy-in]').forEach(a => a.onclick = () => { $('#stdin').value = p.samples[+a.dataset.copyIn].input; });
+  // 程式碼介紹：複製 / 貼到編輯器
+  const lessonEl = $('details.lesson');
+  if (lessonEl) lessonEl.ontoggle = () => store.set('cj-lesson-closed', lessonEl.open ? '0' : '1');
+  $$('[data-lcopy]').forEach(b => b.onclick = async () => {
+    const code = LESSON_CODES[+b.dataset.lcopy];
+    try { await navigator.clipboard.writeText(code); toast('已複製程式碼'); }
+    catch { const t = document.createElement('textarea'); t.value = code; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); toast('已複製程式碼'); }
+  });
+  $$('[data-lput]').forEach(b => b.onclick = () => {
+    const code = LESSON_CODES[+b.dataset.lput];
+    if (cm.getValue().trim() && !confirm('要用範例程式碼取代編輯器裡目前的程式嗎？\n（按「取消」則改為插入到游標位置）')) cm.replaceSelection(code);
+    else cm.setValue(code);
+    cm.focus(); toast('已放到編輯器，可以按「執行測試」試試看');
+  });
 
   async function run() {
     const out = $('#stdout'); out.innerHTML = '<span class="muted">執行中…</span>';
@@ -519,13 +535,25 @@ async function viewProblem(id) {
     if (!noFetch) { d = await api('GET', `/api/problems/${encodeURIComponent(id)}${isTeacher() ? '?cls=' + encodeURIComponent(store.get('cj-cls') || '') : ''}`); Object.assign(data, d); }
     const el = $('#ptab'); if (!el) return;
     const st = data.stats;
+    const myRank = ((data.ranking || []).find(r => r.me || r.account === ME.account) || {}).rank;
     const statHtml = `<div class="statgrid">
       <div class="stat"><b>${st.ac}</b><span>${isTeacher() ? '' : '本班'}通過人數</span></div>
       <div class="stat"><b>${st.tried}</b><span>嘗試人數</span></div>
       <div class="stat"><b>${st.submissions}</b><span>送出次數</span></div>
       ${data.mine ? `<div class="stat"><b class="${data.mine.ac ? 'mine-ac' : 'mine-tried'}">${data.mine.best}</b><span>我的最高分</span></div>
-      <div class="stat"><b style="font-size:14px">${data.mine.ac ? fmtTime(data.mine.firstAC) : '尚未通過'}</b><span>首次通過時間</span></div>` : ''}</div>`;
-    if (tab === 'mine') {
+      <div class="stat"><b style="font-size:14px">${data.mine.ac ? fmtTime(data.mine.firstAC) : '尚未通過'}</b><span>首次通過時間</span></div>` : ''}
+      ${myRank ? `<div class="stat"><b>${myRank <= 3 ? ['🥇', '🥈', '🥉'][myRank - 1] : ''}${myRank}</b><span>我在本班的完成名次</span></div>` : ''}</div>`;
+    if (tab === 'rank') {
+      const c = store.get('cj-cls') || '';
+      const list = data.ranking || [];
+      el.innerHTML = (isTeacher() ? `<div class="row" style="margin-bottom:8px">班級：<select id="clsSel"><option value="">全部（各班分開排名）</option>${data.classes.map(x => `<option ${x === c ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></div>` : '') +
+        `<p class="muted small">依「第一次通過（AC）的時間」排序${isTeacher() ? '' : '，只顯示你們班'}。</p>` +
+        (list.length ? `<div class="table-wrap"><table class="list"><thead><tr><th>名次</th><th>班級座號</th><th>姓名</th><th>完成時間</th><th>送出幾次才通過</th>${isTeacher() ? '<th></th>' : ''}</tr></thead><tbody>
+          ${list.map(r => `<tr class="${r.me ? 'me-row' : ''}"><td>${rankBadge(r.rank)}</td><td>${esc(r.cls)}-${String(r.seat).padStart(2, '0')}</td><td>${esc(r.name)}${r.me ? '（我）' : ''}</td>
+            <td>${fmtTime(r.firstAC)}</td><td>${r.triesToAC} 次</td>${isTeacher() ? `<td><a href="#/submission/${r.acId}">看程式碼</a></td>` : ''}</tr>`).join('')}</tbody></table></div>`
+          : '<p class="muted">還沒有人完成這一題，加油！</p>');
+      if (isTeacher()) $('#clsSel').onchange = e => { store.set('cj-cls', e.target.value); refreshTab(); };
+    } else if (tab === 'mine') {
       el.innerHTML = statHtml + (data.mySubmissions.length ? subTable(data.mySubmissions, { hideUser: true, hideProblem: true }) : '<p class="muted">還沒有送出過這一題。</p>');
     } else {
       const c = store.get('cj-cls') || '';
@@ -540,7 +568,42 @@ async function viewProblem(id) {
     }
   }
   refreshTab(true);
-  if (isTeacher()) pageTimers.push(setInterval(() => { if (tab === 'students') refreshTab(); }, 15000));
+  if (isTeacher()) pageTimers.push(setInterval(() => { if (tab === 'students' || tab === 'rank') refreshTab(); }, 20000));
+}
+
+// 程式碼介紹：文字段落、表格（以 | 開頭的行）、```python 程式碼區塊
+let LESSON_CODES = [];
+function renderLesson(text) {
+  LESSON_CODES = [];
+  const parts = String(text).split(/```(?:python|py)?\n?([\s\S]*?)```/);
+  return parts.map((part, i) => {
+    if (i % 2 === 1) {
+      const code = part.replace(/\n$/, ''), idx = LESSON_CODES.push(code) - 1;
+      return `<div class="lcode"><div class="lcode-bar"><span>Python</span><span class="spacer"></span>
+        <button class="btn sm" data-lcopy="${idx}">📋 複製</button><button class="btn sm" data-lput="${idx}">↪ 放到編輯器</button></div>
+        <pre class="cm-s-default">${highlightPy(code)}</pre></div>`;
+    }
+    const lines = part.replace(/^\n+|\n+$/g, '').split('\n');
+    let html = '', buf = [], table = [];
+    const flushP = () => { if (buf.length) html += `<p>${buf.map(esc).join('<br>')}</p>`; buf = []; };
+    const flushT = () => {
+      if (table.length) html += `<table class="ltable">${table.map((r, ri) => `<tr>${r.map(c => ri === 0 ? `<th>${esc(c)}</th>` : `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</table>`;
+      table = [];
+    };
+    for (const line of lines) {
+      if (/^\s*\|/.test(line)) { flushP(); table.push(line.trim().replace(/^\||\|$/g, '').split('|').map(s => s.trim())); }
+      else if (!line.trim()) { flushT(); flushP(); }
+      else { flushT(); buf.push(line); }
+    }
+    flushT(); flushP();
+    return html;
+  }).join('');
+}
+function highlightPy(code) {
+  if (!CodeMirror.runMode) return esc(code);
+  let out = '';
+  CodeMirror.runMode(code, 'python', (txt, style) => { out += style ? `<span class="cm-${style.split(' ').join(' cm-')}">${esc(txt)}</span>` : esc(txt); });
+  return out;
 }
 
 function renderResult(s) {
@@ -681,7 +744,7 @@ async function viewScoreboard() {
     <label class="small"><input type="checkbox" id="auto" checked> 每 20 秒自動更新</label>
     <button class="btn" id="csv">⬇ 匯出 CSV（Excel）</button>
     <button class="btn" id="toSheet">寫入 Google Sheet</button></div>
-    <p class="muted small" style="margin:8px 0 0">綠色＝通過、橘色＝部分得分、紅色＝0 分；格子內為最高分與送出次數，點格子看最後一次的程式碼。<span class="online"></span>＝2 分鐘內有活動</p></div>
+    <p class="muted small" style="margin:8px 0 0">綠色＝通過、橘色＝部分得分、紅色＝0 分；格子內為最高分、本班完成名次（#）與送出次數，點格子看最後一次的程式碼。<span class="online"></span>＝2 分鐘內有活動</p></div>
     <div class="card" id="sb"><div class="loading">載入中…</div></div>`;
   let last = null;
   $('#csv').onclick = () => {
@@ -708,7 +771,7 @@ async function viewScoreboard() {
       ${d.problems.map(p => `<th class="p" title="${esc(p.title)}"><a href="#/problem/${esc(p.id)}">${esc(p.id)}</a></th>`).join('')}<th>通過</th><th>總分</th></tr></thead><tbody>
       ${d.rows.map(r => `<tr><td class="name">${esc(r.cls)}-${String(r.seat).padStart(2, '0')}</td>
         <td class="name"><span class="${online(r.lastSeen) ? 'online' : 'offline'}"></span><a href="#/submissions?account=${esc(r.account)}">${esc(r.name)}</a></td>
-        ${r.cells.map((c, i) => `<td>${c ? `<a class="cell ${c.ac ? 'ac' : c.best > 0 ? 'part' : 'zero'}" href="#/submission/${c.lastId}" title="${esc(d.problems[i].title)}｜送出 ${c.tries} 次${c.ac ? '｜首次通過 ' + fmtTime(c.firstAC) : ''}">${c.best}<small>${c.tries} 次</small></a>` : ''}</td>`).join('')}
+        ${r.cells.map((c, i) => `<td>${c ? `<a class="cell ${c.ac ? 'ac' : c.best > 0 ? 'part' : 'zero'}" href="#/submission/${c.lastId}" title="${esc(d.problems[i].title)}｜送出 ${c.tries} 次${c.ac ? '｜首次通過 ' + fmtTime(c.firstAC) + '｜本班第 ' + c.rank + ' 名' : ''}">${c.best}<small>${c.rank ? `#${c.rank} · ` : ''}${c.tries} 次</small></a>` : ''}</td>`).join('')}
         <td>${r.acCount}</td><td><b>${r.total}</b></td></tr>`).join('')}
       </tbody><tfoot><tr><th class="name" colspan="2">通過人數</th>${d.problems.map((p, i) => `<th>${d.rows.filter(r => r.cells[i] && r.cells[i].ac).length}</th>`).join('')}<th></th><th>滿分 ${d.maxTotal}</th></tr></tfoot></table></div>`;
   }
@@ -762,6 +825,8 @@ async function viewEditProblem(id) {
         時間限制 <input type="number" id="f_timeLimitMs" value="${p.timeLimitMs}" style="width:90px"> ms
         <label class="small"><input type="checkbox" id="f_visible" ${p.visible ? 'checked' : ''}> 公開給學生</label></div>
       ${field('content', '題目內容', 'area')}${field('inputDesc', '輸入說明', 'area')}${field('outputDesc', '輸出說明', 'area')}${field('hint', '提示', 'area')}
+      <label>程式碼介紹<br><span class="muted small">顯示在題目最上方</span></label><div><textarea id="f_lesson" rows="10" style="font-family:var(--mono)">${esc(p.lesson || '')}</textarea>
+        <div class="muted small">程式碼請用 <code>\`\`\`python</code> 開頭、<code>\`\`\`</code> 結尾包起來，學生可以一鍵複製或放到編輯器；以 | 開頭的行會顯示成表格。</div></div>
       <label>參考解答<br><span class="muted small">學生看不到</span></label><div><div id="solEd"></div>
         <div class="row" style="margin-top:6px"><button class="btn" id="gen">▶ 用參考解答產生全部測資的輸出</button><span class="muted small" id="genMsg"></span></div></div>
     </div>
@@ -807,7 +872,7 @@ async function viewEditProblem(id) {
     const np = {
       id: g('id').trim(), title: g('title'), chapter: g('chapter'), tags: g('tags').split(/[,，]/).map(s => s.trim()).filter(Boolean),
       difficulty: +g('difficulty'), timeLimitMs: +g('timeLimitMs'), visible: $('#f_visible').checked,
-      content: g('content'), inputDesc: g('inputDesc'), outputDesc: g('outputDesc'), hint: g('hint'),
+      content: g('content'), inputDesc: g('inputDesc'), outputDesc: g('outputDesc'), hint: g('hint'), lesson: g('lesson'),
       solution: sol.getValue(), tests: p.tests,
       samples: $('#autoSample').checked && p.tests[0] ? [{ input: p.tests[0].input, output: p.tests[0].output }] : p.samples,
     };
