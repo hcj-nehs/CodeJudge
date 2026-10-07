@@ -12,18 +12,32 @@ const clearPageTimers = () => { pageTimers.forEach(clearInterval); pageTimers = 
 
 const CFG = window.CJ_CONFIG || {};
 // 呼叫 Google Apps Script 後端（用 text/plain 避免跨網域預檢）
+// Google 偶爾會把 POST 轉址成 GET，後端只會回「API 運作中」而沒有處理請求——這種情況一定可以安全地重送。
+// 其他非 JSON 的錯誤網頁：讀取（GET）才重試；送出評測、留言等不自動重試，避免重複送出。
 async function api(method, url, body) {
   const [path, qs] = url.split('?');
   const query = Object.fromEntries(new URLSearchParams(qs || ''));
-  let r;
-  try {
-    r = await fetch(CFG.API_URL, {
-      method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, redirect: 'follow',
-      body: JSON.stringify({ method, path, query, body: body || null, token: store.get('cj-token') }),
-    });
-  } catch (e) { throw new Error('無法連線到後端（請檢查 config.js 的 API_URL 或網路）'); }
-  let data = {};
-  try { data = await r.json(); } catch { throw new Error('後端回應格式錯誤，請確認 Apps Script 已正確部署'); }
+  const safe = method === 'GET';
+  let data = null, lastErr = '';
+  for (let i = 0; i < 4 && !data; i++) {
+    if (i) await new Promise(r => setTimeout(r, 700 * i));
+    let text;
+    try {
+      const r = await fetch(CFG.API_URL, {
+        method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, redirect: 'follow',
+        body: JSON.stringify({ method, path, query, body: body || null, token: store.get('cj-token') }),
+      });
+      text = await r.text();
+    } catch (e) { lastErr = '無法連線到後端，請檢查網路後再試一次'; if (!safe) break; continue; }
+    try { data = JSON.parse(text); }
+    catch {
+      console.warn('後端回應不是 JSON：', path, text.slice(0, 500));
+      lastErr = 'Google 伺服器暫時忙碌，請稍等幾秒再試一次';
+      if (/API 運作中/.test(text)) continue;   // 請求沒被處理，重送
+      if (!safe) { lastErr = 'Google 伺服器暫時沒有正確回應，請重新整理確認是否已送出'; break; }
+    }
+  }
+  if (!data) throw new Error(lastErr);
   if (data.status === 401 && path !== '/api/login') { ME = null; store.set('cj-token', ''); location.hash = '#/login'; }
   if (data.error) throw new Error(data.error);
   return data.data;
@@ -741,12 +755,12 @@ async function viewSubmission(id) {
 async function viewScoreboard() {
   let cls = store.get('cj-cls') || '';
   app().innerHTML = `<div class="card"><div class="row"><h2 style="margin:0">成績總表</h2><span class="spacer"></span>
-    班級：<select id="sbcls"></select>
     <label class="small"><input type="checkbox" id="auto" checked> 每 20 秒自動更新</label>
     <button class="btn" id="csv">⬇ 匯出 CSV（Excel）</button>
     <button class="btn" id="toSheet">寫入 Google Sheet</button></div>
+    <div class="tabs cls-tabs" id="clsTabs" style="margin:12px 0 0"></div>
     <p class="muted small" style="margin:8px 0 0">綠色＝通過、橘色＝部分得分、紅色＝0 分；格子內為最高分、本班完成名次（#）與送出次數，點格子看最後一次的程式碼。<span class="online"></span>＝2 分鐘內有活動</p></div>
-    <div class="card" id="sb"><div class="loading">載入中…</div></div>`;
+    <div id="sb"><div class="card loading">載入中…</div></div>`;
   let last = null;
   $('#csv').onclick = () => {
     if (!last) return;
@@ -762,21 +776,36 @@ async function viewScoreboard() {
     try { toast((await api('POST', '/api/scoreboard/sheet', { cls })).msg, 4000); } catch (e) { toast(e.message); }
     b.disabled = false;
   };
+  const online = t => t && Date.now() - t < 120000;
+  // 一個班級一張表
+  const classTable = (c, rows, d) => `<div class="card"><div class="row" style="margin-bottom:8px"><h2 style="margin:0">${esc(c)} 班</h2>
+      <span class="muted">${rows.length} 人 · 全部通過 ${rows.filter(r => r.acCount === d.problems.length).length} 人 · 平均 ${rows.length ? Math.round(rows.reduce((a, r) => a + r.total, 0) / rows.length) : 0} 分</span></div>
+    <div class="table-wrap"><table class="list sb"><thead><tr><th class="name">座號</th><th class="name">姓名</th>
+      ${d.problems.map(p => `<th class="p" title="${esc(p.title)}"><a href="#/problem/${esc(p.id)}">${esc(p.id)}</a></th>`).join('')}<th>通過</th><th>總分</th></tr></thead><tbody>
+      ${rows.map(r => `<tr><td class="name">${String(r.seat).padStart(2, '0')}</td>
+        <td class="name"><span class="${online(r.lastSeen) ? 'online' : 'offline'}"></span><a href="#/submissions?account=${esc(r.account)}">${esc(r.name)}</a></td>
+        ${r.cells.map((cell, i) => `<td>${cell ? `<a class="cell ${cell.ac ? 'ac' : cell.best > 0 ? 'part' : 'zero'}" href="#/submission/${cell.lastId}" title="${esc(d.problems[i].title)}｜送出 ${cell.tries} 次${cell.ac ? '｜首次通過 ' + fmtTime(cell.firstAC) + '｜本班第 ' + cell.rank + ' 名' : ''}">${cell.best}<small>${cell.rank ? `#${cell.rank} · ` : ''}${cell.tries} 次</small></a>` : ''}</td>`).join('')}
+        <td>${r.acCount}</td><td><b>${r.total}</b></td></tr>`).join('')}
+      </tbody><tfoot><tr><th class="name" colspan="2">通過人數</th>${d.problems.map((p, i) => `<th>${rows.filter(r => r.cells[i] && r.cells[i].ac).length}</th>`).join('')}<th></th><th>滿分 ${d.maxTotal}</th></tr></tfoot></table></div></div>`;
   async function load() {
     const d = await api('GET', '/api/scoreboard?cls=' + encodeURIComponent(cls));
     last = d;
-    const sel = $('#sbcls'); if (!sel) return;
-    if (!sel.options.length) { sel.innerHTML = '<option value="">全部班級</option>' + d.classes.map(c => `<option>${esc(c)}</option>`).join(''); sel.value = cls; }
-    const online = t => t && Date.now() - t < 120000;
-    $('#sb').innerHTML = `<div class="table-wrap"><table class="list sb"><thead><tr><th class="name">班級座號</th><th class="name">姓名</th>
-      ${d.problems.map(p => `<th class="p" title="${esc(p.title)}"><a href="#/problem/${esc(p.id)}">${esc(p.id)}</a></th>`).join('')}<th>通過</th><th>總分</th></tr></thead><tbody>
-      ${d.rows.map(r => `<tr><td class="name">${esc(r.cls)}-${String(r.seat).padStart(2, '0')}</td>
-        <td class="name"><span class="${online(r.lastSeen) ? 'online' : 'offline'}"></span><a href="#/submissions?account=${esc(r.account)}">${esc(r.name)}</a></td>
-        ${r.cells.map((c, i) => `<td>${c ? `<a class="cell ${c.ac ? 'ac' : c.best > 0 ? 'part' : 'zero'}" href="#/submission/${c.lastId}" title="${esc(d.problems[i].title)}｜送出 ${c.tries} 次${c.ac ? '｜首次通過 ' + fmtTime(c.firstAC) + '｜本班第 ' + c.rank + ' 名' : ''}">${c.best}<small>${c.rank ? `#${c.rank} · ` : ''}${c.tries} 次</small></a>` : ''}</td>`).join('')}
-        <td>${r.acCount}</td><td><b>${r.total}</b></td></tr>`).join('')}
-      </tbody><tfoot><tr><th class="name" colspan="2">通過人數</th>${d.problems.map((p, i) => `<th>${d.rows.filter(r => r.cells[i] && r.cells[i].ac).length}</th>`).join('')}<th></th><th>滿分 ${d.maxTotal}</th></tr></tfoot></table></div>`;
+    const tabs = $('#clsTabs'); if (!tabs) return;
+    if (!d.classes.length) {
+      tabs.innerHTML = '';
+      $('#sb').innerHTML = `<div class="card"><div class="friendly"><b>目前名單裡沒有任何學生。</b>
+        請打開 Google 試算表的「學生名單」工作表，在第 1 列放標題「班級、座號、姓名、Email」，從第 2 列開始貼上學生資料（可以直接從 班級學生資料.xlsx 複製 A1:D70 貼到 A1）。貼好後重新整理這一頁即可，不需要重新部署。</div></div>`;
+      return;
+    }
+    // 沒選過班級（或記住的班級不存在）時，預設顯示第一個班；「全部」時回傳的資料已含各班，直接篩選即可
+    if (cls && !d.classes.includes(cls)) { cls = d.classes[0]; store.set('cj-cls', cls); return load(); }
+    if (store.get('cj-cls') === null) { cls = d.classes[0]; store.set('cj-cls', cls); }
+    tabs.innerHTML = d.classes.map(c => `<button data-c="${esc(c)}" class="${c === cls ? 'on' : ''}">${esc(c)} 班</button>`).join('') +
+      `<button data-c="" class="${cls ? '' : 'on'}">全部班級（分開顯示）</button>`;
+    $$('#clsTabs button').forEach(b => b.onclick = () => { cls = b.dataset.c; store.set('cj-cls', cls); load(); });
+    const list = cls ? [cls] : d.classes;
+    $('#sb').innerHTML = list.map(c => classTable(c, d.rows.filter(r => r.cls === c), d)).join('');
   }
-  $('#sbcls').onchange = e => { cls = e.target.value; store.set('cj-cls', cls); load(); };
   await load();
   pageTimers.push(setInterval(() => { if ($('#auto') && $('#auto').checked) load(); }, 20000));
 }
