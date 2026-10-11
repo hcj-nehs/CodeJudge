@@ -36,9 +36,10 @@ const seat2 = n => String(n || '').padStart(2, '0');
 const normalize = s => String(s || '').replace(/\r\n?/g, '\n').split('\n').map(l => l.replace(/[ \t]+$/, '')).join('\n').replace(/\n+$/, '');
 
 // ============ 題目資料（存在瀏覽器，版本號改變時才重新下載） ============
-// 分類（初階／進階）就是「單元」：題目列表依分類分頁，老師可以為每個分類設定目標題數
-const SERIES_DESC = { '初階': 'print、input、運算、if、for、while 基本練習', '進階': '綜合應用與挑戰題' };
-const seriesOrder = k => k === '初階' ? 0 : k === '進階' ? 1 : 2;
+// 分類（A系列・基礎／B系列・進階）就是「單元」：題目列表依分類分頁，老師可以為每個分類設定目標題數
+const DEFAULT_SERIES = 'A系列・基礎';
+const SERIES_DESC = { 'A系列・基礎': 'print、input、運算、if、for、while', 'B系列・進階': '仿 APCS 實作題：字串、串列、模擬' };
+const seriesOrder = k => SERIES_DESC[k] ? 0 : 1;
 let PROBS = [], PMAP = {}, SERIES_KEYS = [];
 function applyProblems(list) {
   PROBS = (list || []).map(p => Object.assign({}, p, { series: p.chapter || '其他', topic: p.chapter || '其他', tags: p.tags || [] }))
@@ -1386,7 +1387,7 @@ async function viewScoreboard() {
   const online = t => t && Date.now() - t < 120000;
   const renderUnit = () => {
     const rows = studs(), c = readCfg(), u = unitScores(rows, last.cls.goals || {}, c, last.cls.required);
-    if (!u.units.length) { $('#sb').innerHTML = `<div class="card"><div class="friendly"><b>${esc(last.cls.name)} 班還沒有設定目標題數。</b>請到 <a href="#/class/${esc(cid)}">班級管理</a> 填寫「初階」「進階」各要完成幾題。</div></div>`; return; }
+    if (!u.units.length) { $('#sb').innerHTML = `<div class="card"><div class="friendly"><b>${esc(last.cls.name)} 班還沒有設定目標題數。</b>請到 <a href="#/class/${esc(cid)}">班級管理</a> 填寫 A 系列、B 系列各要完成幾題。</div></div>`; return; }
     $('#sb').innerHTML = !rows.length ? '<div class="card">這個班級還沒有學生。</div>' : `<div class="card"><div class="row" style="margin-bottom:8px"><h2 style="margin:0">${esc(last.cls.name)} 班　目標成績</h2>
       <span class="muted">${rows.length} 人 · ${u.units.length} 個目標 · 全部達標 ${rows.filter((r, i) => u.units.every(t => u.res[i][t].met)).length} 人</span></div>
     <div class="table-wrap"><table class="list sb unit-sb"><thead><tr><th class="name">座號</th><th class="name">姓名</th><th>達標</th><th>目標平均</th>
@@ -1408,7 +1409,7 @@ async function viewScoreboard() {
       `<div class="card"><div class="row" style="margin-bottom:8px"><h2 style="margin:0">${esc(last.cls.name)} 班</h2>
       <span class="muted">${rows.length} 人 · 平均通過 ${(rows.reduce((a, r) => a + acs(r), 0) / rows.length).toFixed(1)} 題</span></div>
     <div class="table-wrap"><table class="list sb"><thead><tr><th class="name">座號</th><th class="name">姓名</th><th>通過</th><th>${mode === 'grade' ? '換算平均' : '總分'}</th>
-      ${ps.map(p => `<th class="p" title="${esc(p.title)}"><a href="#/problem/${p.id}">${p.id.replace(/^a0?/, '')}</a></th>`).join('')}</tr></thead><tbody>
+      ${ps.map(p => `<th class="p" title="${esc(p.title)}"><a href="#/problem/${p.id}">${p.id}</a></th>`).join('')}</tr></thead><tbody>
       ${rows.map(r => `<tr><td class="name">${seat2(r.seat)}</td>
         <td class="name"><span class="${online(r.lastSeen) ? 'online' : 'offline'}"></span><a href="#/submissions?account=${esc(r.account)}&cid=${esc(cid)}">${esc(r.name)}</a></td>
         <td><b>${acs(r)}</b></td><td>${sum(r)}</td>
@@ -1647,7 +1648,7 @@ async function viewTests(id) {
 
 // ============ 新增／編輯題目（老師） ============
 async function viewEdit(id) {
-  let p = { id: '', title: '', chapter: '初階', tags: [], difficulty: 1, content: '', inputDesc: '', outputDesc: '', samples: [], hint: '', lesson: '', timeLimitMs: 2000, tests: [{ input: '', output: '', score: 100, public: true }], solution: '', visible: true };
+  let p = { id: '', title: '', chapter: DEFAULT_SERIES, tags: [], difficulty: 1, content: '', inputDesc: '', outputDesc: '', samples: [], hint: '', lesson: '', timeLimitMs: 2000, tests: [{ input: '', output: '', score: 100, public: true }], solution: '', visible: true };
   if (id) {
     app().innerHTML = '<div class="loading">載入中…</div>';
     p = (await apiGet('/api/problem-admin/' + id)).problem;
@@ -1664,7 +1665,7 @@ async function viewEdit(id) {
     <div class="form-grid">
       ${field('id', '題號')}${field('title', '題目名稱')}
       <label>分類</label><div class="row"><input type="text" id="f_chapter" value="${esc(p.chapter)}" list="chapterList" style="width:200px">
-        <datalist id="chapterList">${[...new Set(['初階', '進階', ...SERIES_KEYS])].map(k => `<option value="${esc(k)}">`).join('')}</datalist> <span class="muted small">選「初階」或「進階」，也可以自己輸入新的分類</span></div>
+        <datalist id="chapterList">${[...new Set([...Object.keys(SERIES_DESC), ...SERIES_KEYS])].map(k => `<option value="${esc(k)}">`).join('')}</datalist> <span class="muted small">選 A 系列或 B 系列，也可以自己輸入新的分類</span></div>
       <label>分類標籤</label><input type="text" id="f_tags" value="${esc((p.tags || []).join(', '))}" placeholder="用逗號分隔，例如 input, 變數">
       <label>難度 / 時限</label><div class="row"><select id="f_difficulty">${[1, 2, 3].map(n => `<option value="${n}" ${n === p.difficulty ? 'selected' : ''}>${'★'.repeat(n)}</option>`).join('')}</select>
         時間限制 <input type="number" id="f_timeLimitMs" value="${p.timeLimitMs}" style="width:90px"> ms
@@ -1713,7 +1714,7 @@ async function viewEdit(id) {
   $('#save').onclick = async () => {
     const g = k => $('#f_' + k).value;
     const np = {
-      id: g('id').trim(), title: g('title'), chapter: g('chapter').trim() || '初階', tags: g('tags').split(/[,，]/).map(s => s.trim()).filter(Boolean),
+      id: g('id').trim(), title: g('title'), chapter: g('chapter').trim() || DEFAULT_SERIES, tags: g('tags').split(/[,，]/).map(s => s.trim()).filter(Boolean),
       difficulty: +g('difficulty'), timeLimitMs: +g('timeLimitMs'), visible: $('#f_visible').checked,
       content: g('content'), inputDesc: g('inputDesc'), outputDesc: g('outputDesc'), hint: g('hint'), lesson: g('lesson'),
       solution: sol.getValue(), tests,
